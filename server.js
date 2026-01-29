@@ -15,9 +15,9 @@ const io = new Server(server, {
 // ==============================
 // In-memory state
 // ==============================
-const users = {};
-const strokes = [];
-const redoStack = [];
+const users = {};        // socket.id -> username
+const strokes = [];      // all committed strokes
+const redoStack = [];    // redo history
 
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
@@ -27,7 +27,11 @@ io.on("connection", (socket) => {
   // ==============================
   socket.on("user:join", (username) => {
     users[socket.id] = username;
+
+    // Send full canvas history
     socket.emit("canvas:sync", strokes);
+
+    // Update online users
     io.emit("users:update", Object.values(users));
   });
 
@@ -38,11 +42,13 @@ io.on("connection", (socket) => {
     stroke.user = users[socket.id];
 
     // Always initialize points for brush / eraser
-    if (!stroke.points) {
+    if (!Array.isArray(stroke.points)) {
       stroke.points = [];
     }
 
     socket.currentStroke = stroke;
+
+    // Broadcast start (for live drawing)
     socket.broadcast.emit("stroke:start", stroke);
   });
 
@@ -52,14 +58,14 @@ io.on("connection", (socket) => {
   socket.on("stroke:move", (data) => {
     if (!socket.currentStroke) return;
 
-    // ✅ SUPPORT BOTH FORMATS
     let point = null;
 
-    if (data.point) {
+    // ✅ Support BOTH payload formats
+    if (data?.point) {
       point = data.point;
     } else if (
-      typeof data.x === "number" &&
-      typeof data.y === "number"
+      typeof data?.x === "number" &&
+      typeof data?.y === "number"
     ) {
       point = { x: data.x, y: data.y };
     }
@@ -68,6 +74,7 @@ io.on("connection", (socket) => {
 
     socket.currentStroke.points.push(point);
 
+    // Broadcast minimal move payload
     socket.broadcast.emit("stroke:move", {
       strokeId: socket.currentStroke.id,
       x: point.x,
@@ -90,10 +97,13 @@ io.on("connection", (socket) => {
       socket.currentStroke.endY = data.endY;
     }
 
+    // Save stroke permanently
     strokes.push(socket.currentStroke);
+
+    // Clear redo stack
     redoStack.length = 0;
 
-    // Broadcast FULL stroke
+    // 🔥 Broadcast FULL stroke object
     io.emit("stroke:end", socket.currentStroke);
 
     socket.currentStroke = null;
@@ -104,6 +114,7 @@ io.on("connection", (socket) => {
   // ==============================
   socket.on("undo", () => {
     if (!strokes.length) return;
+
     redoStack.push(strokes.pop());
     io.emit("canvas:reset", strokes);
   });
@@ -113,6 +124,7 @@ io.on("connection", (socket) => {
   // ==============================
   socket.on("redo", () => {
     if (!redoStack.length) return;
+
     strokes.push(redoStack.pop());
     io.emit("canvas:reset", strokes);
   });
@@ -127,9 +139,13 @@ io.on("connection", (socket) => {
   });
 });
 
+// ==============================
+// SERVER START
+// ==============================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
