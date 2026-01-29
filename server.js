@@ -9,17 +9,15 @@ app.use(cors());
 const server = http.createServer(app);
 
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-  },
+  cors: { origin: "*" },
 });
 
 // ==============================
-// In-memory state (current setup)
+// In-memory state
 // ==============================
-const users = {};          // socketId -> username
-const strokes = [];        // all committed strokes (brush + shapes)
-const redoStack = [];      // redo history
+const users = {};
+const strokes = [];
+const redoStack = [];
 
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
@@ -29,11 +27,7 @@ io.on("connection", (socket) => {
   // ==============================
   socket.on("user:join", (username) => {
     users[socket.id] = username;
-
-    // Send full canvas history to newly joined user
     socket.emit("canvas:sync", strokes);
-
-    // Update online users list
     io.emit("users:update", Object.values(users));
   });
 
@@ -41,52 +35,54 @@ io.on("connection", (socket) => {
   // STROKE START
   // ==============================
   socket.on("stroke:start", (stroke) => {
-    /*
-      IMPORTANT:
-      - Do NOT overwrite shape data
-      - Only initialize points array if it doesn't exist
-    */
     stroke.user = users[socket.id];
 
+    // Always initialize points for brush / eraser
     if (!stroke.points) {
       stroke.points = [];
     }
 
     socket.currentStroke = stroke;
-
-    // Broadcast to other users for real-time drawing
     socket.broadcast.emit("stroke:start", stroke);
   });
 
   // ==============================
-  // STROKE MOVE (FREEHAND ONLY)
+  // STROKE MOVE (BRUSH / ERASER)
   // ==============================
-  socket.on("stroke:move", (payload) => {
+  socket.on("stroke:move", (data) => {
     if (!socket.currentStroke) return;
 
-    // Only freehand strokes have points
-    if (payload.point) {
-      socket.currentStroke.points.push(payload.point);
+    // ✅ SUPPORT BOTH FORMATS
+    let point = null;
 
-      socket.broadcast.emit("stroke:move", {
-        strokeId: socket.currentStroke.id,
-        point: payload.point,
-      });
+    if (data.point) {
+      point = data.point;
+    } else if (
+      typeof data.x === "number" &&
+      typeof data.y === "number"
+    ) {
+      point = { x: data.x, y: data.y };
     }
+
+    if (!point) return;
+
+    socket.currentStroke.points.push(point);
+
+    socket.broadcast.emit("stroke:move", {
+      strokeId: socket.currentStroke.id,
+      x: point.x,
+      y: point.y,
+    });
   });
 
   // ==============================
-  // STROKE END (FREEHAND + SHAPES)
+  // STROKE END (BRUSH + SHAPES)
   // ==============================
   socket.on("stroke:end", (data) => {
     if (!socket.currentStroke) return;
 
-    /*
-      SHAPE FIX:
-      If this is a shape stroke, merge shape geometry
-      into the current stroke before saving.
-    */
-    if (data && data.shapeType) {
+    // Merge shape geometry if present
+    if (data?.shapeType) {
       socket.currentStroke.shapeType = data.shapeType;
       socket.currentStroke.startX = data.startX;
       socket.currentStroke.startY = data.startY;
@@ -94,13 +90,10 @@ io.on("connection", (socket) => {
       socket.currentStroke.endY = data.endY;
     }
 
-    // Save stroke permanently
     strokes.push(socket.currentStroke);
-
-    // Clear redo stack on new action
     redoStack.length = 0;
 
-    // Broadcast FULL stroke (not just ID)
+    // Broadcast FULL stroke
     io.emit("stroke:end", socket.currentStroke);
 
     socket.currentStroke = null;
@@ -110,12 +103,8 @@ io.on("connection", (socket) => {
   // UNDO
   // ==============================
   socket.on("undo", () => {
-    if (strokes.length === 0) return;
-
-    const removedStroke = strokes.pop();
-    redoStack.push(removedStroke);
-
-    // Send updated canvas to everyone
+    if (!strokes.length) return;
+    redoStack.push(strokes.pop());
     io.emit("canvas:reset", strokes);
   });
 
@@ -123,11 +112,8 @@ io.on("connection", (socket) => {
   // REDO
   // ==============================
   socket.on("redo", () => {
-    if (redoStack.length === 0) return;
-
-    const restoredStroke = redoStack.pop();
-    strokes.push(restoredStroke);
-
+    if (!redoStack.length) return;
+    strokes.push(redoStack.pop());
     io.emit("canvas:reset", strokes);
   });
 
@@ -141,11 +127,9 @@ io.on("connection", (socket) => {
   });
 });
 
-// ==============================
-// SERVER START
-// ==============================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
