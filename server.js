@@ -16,7 +16,7 @@ const io = new Server(server, {
 // In-memory state
 // ==============================
 const users = {};        // socket.id -> username
-const strokes = [];      // committed strokes
+const strokes = [];      // committed strokes (brush + shapes)
 const redoStack = [];    // redo history
 
 io.on("connection", (socket) => {
@@ -27,7 +27,11 @@ io.on("connection", (socket) => {
   // ==============================
   socket.on("user:join", (username) => {
     users[socket.id] = username;
+
+    // Send full canvas history
     socket.emit("canvas:sync", strokes);
+
+    // Update online users
     io.emit("users:update", Object.values(users));
   });
 
@@ -36,6 +40,7 @@ io.on("connection", (socket) => {
   // ==============================
   socket.on("stroke:start", (stroke) => {
     stroke.user = users[socket.id];
+    stroke.userId = socket.id; // ✅ IMPORTANT
 
     if (!Array.isArray(stroke.points)) {
       stroke.points = [];
@@ -43,6 +48,7 @@ io.on("connection", (socket) => {
 
     socket.currentStroke = stroke;
 
+    // Live drawing start
     socket.broadcast.emit("stroke:start", stroke);
   });
 
@@ -52,21 +58,22 @@ io.on("connection", (socket) => {
   socket.on("stroke:move", (data) => {
     if (!socket.currentStroke) return;
 
-    const point = {
-      x: data.x,
-      y: data.y,
-    };
+    // ✅ Validate coordinates
+    if (typeof data.x !== "number" || typeof data.y !== "number") return;
 
+    const point = { x: data.x, y: data.y };
     socket.currentStroke.points.push(point);
 
-    // 🔥 Always broadcast full metadata
+    // 🔥 Broadcast FULL metadata (fixes color + ghost lines)
     socket.broadcast.emit("stroke:move", {
+      id: socket.currentStroke.id,
       strokeId: socket.currentStroke.id,
       x: point.x,
       y: point.y,
       color: socket.currentStroke.color,
       strokeWidth: socket.currentStroke.strokeWidth,
       tool: socket.currentStroke.tool,
+      userId: socket.currentStroke.userId,
       user: socket.currentStroke.user,
     });
   });
@@ -77,6 +84,7 @@ io.on("connection", (socket) => {
   socket.on("stroke:end", (data) => {
     if (!socket.currentStroke) return;
 
+    // Merge shape geometry if present
     if (data?.shapeType) {
       socket.currentStroke.shapeType = data.shapeType;
       socket.currentStroke.startX = data.startX;
@@ -88,7 +96,9 @@ io.on("connection", (socket) => {
     strokes.push(socket.currentStroke);
     redoStack.length = 0;
 
+    // Broadcast final committed stroke
     io.emit("stroke:end", socket.currentStroke);
+
     socket.currentStroke = null;
   });
 
@@ -96,6 +106,8 @@ io.on("connection", (socket) => {
   // GHOST CURSOR MOVE
   // ==============================
   socket.on("cursor:move", ({ x, y }) => {
+    if (typeof x !== "number" || typeof y !== "number") return;
+
     socket.broadcast.emit("cursor:update", {
       socketId: socket.id,
       username: users[socket.id],
@@ -142,6 +154,7 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
