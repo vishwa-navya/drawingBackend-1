@@ -13,7 +13,7 @@ const io = new Server(server, {
 });
 
 // ==============================
-// In-memory state
+// In-memory state (SOURCE OF TRUTH)
 // ==============================
 const users = {};        // socket.id -> username
 const strokes = [];      // committed strokes (brush + shapes)
@@ -40,7 +40,7 @@ io.on("connection", (socket) => {
   // ==============================
   socket.on("stroke:start", (stroke) => {
     stroke.user = users[socket.id];
-    stroke.userId = socket.id; // ✅ IMPORTANT
+    stroke.userId = socket.id;
 
     if (!Array.isArray(stroke.points)) {
       stroke.points = [];
@@ -57,14 +57,12 @@ io.on("connection", (socket) => {
   // ==============================
   socket.on("stroke:move", (data) => {
     if (!socket.currentStroke) return;
-
-    // ✅ Validate coordinates
     if (typeof data.x !== "number" || typeof data.y !== "number") return;
 
     const point = { x: data.x, y: data.y };
     socket.currentStroke.points.push(point);
 
-    // 🔥 Broadcast FULL metadata (fixes color + ghost lines)
+    // Broadcast full metadata (fixes color + ghost lines)
     socket.broadcast.emit("stroke:move", {
       id: socket.currentStroke.id,
       strokeId: socket.currentStroke.id,
@@ -96,31 +94,23 @@ io.on("connection", (socket) => {
     strokes.push(socket.currentStroke);
     redoStack.length = 0;
 
-    // Broadcast final committed stroke
+    // Broadcast committed stroke
     io.emit("stroke:end", socket.currentStroke);
 
     socket.currentStroke = null;
   });
 
   // ==============================
-  // GHOST CURSOR MOVE
+  // 🔥 CLEAR CANVAS (PERMANENT DELETE)
   // ==============================
-  socket.on("cursor:move", ({ x, y }) => {
-    if (typeof x !== "number" || typeof y !== "number") return;
+  socket.on("clear:canvas", () => {
+    console.log("Canvas cleared by:", users[socket.id]);
 
-    socket.broadcast.emit("cursor:update", {
-      socketId: socket.id,
-      username: users[socket.id],
-      x,
-      y,
-    });
-  });
+    strokes.length = 0;      // ✅ PERMANENT DELETE
+    redoStack.length = 0;
 
-  // ==============================
-  // CURSOR LEAVE (MOBILE TOUCH END)
-  // ==============================
-  socket.on("cursor:leave", () => {
-    socket.broadcast.emit("cursor:remove", socket.id);
+    // Broadcast empty canvas to ALL users
+    io.emit("canvas:reset", []);
   });
 
   // ==============================
@@ -139,6 +129,24 @@ io.on("connection", (socket) => {
   });
 
   // ==============================
+  // GHOST CURSOR
+  // ==============================
+  socket.on("cursor:move", ({ x, y }) => {
+    if (typeof x !== "number" || typeof y !== "number") return;
+
+    socket.broadcast.emit("cursor:update", {
+      socketId: socket.id,
+      username: users[socket.id],
+      x,
+      y,
+    });
+  });
+
+  socket.on("cursor:leave", () => {
+    socket.broadcast.emit("cursor:remove", socket.id);
+  });
+
+  // ==============================
   // DISCONNECT
   // ==============================
   socket.on("disconnect", () => {
@@ -154,6 +162,7 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
