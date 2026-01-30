@@ -16,7 +16,7 @@ const io = new Server(server, {
 // In-memory state
 // ==============================
 const users = {};        // socket.id -> username
-const strokes = [];      // all committed strokes
+const strokes = [];      // committed strokes
 const redoStack = [];    // redo history
 
 io.on("connection", (socket) => {
@@ -27,11 +27,7 @@ io.on("connection", (socket) => {
   // ==============================
   socket.on("user:join", (username) => {
     users[socket.id] = username;
-
-    // Send full canvas history
     socket.emit("canvas:sync", strokes);
-
-    // Update online users
     io.emit("users:update", Object.values(users));
   });
 
@@ -41,14 +37,12 @@ io.on("connection", (socket) => {
   socket.on("stroke:start", (stroke) => {
     stroke.user = users[socket.id];
 
-    // Always initialize points for brush / eraser
     if (!Array.isArray(stroke.points)) {
       stroke.points = [];
     }
 
     socket.currentStroke = stroke;
 
-    // Broadcast start (for live drawing)
     socket.broadcast.emit("stroke:start", stroke);
   });
 
@@ -58,27 +52,22 @@ io.on("connection", (socket) => {
   socket.on("stroke:move", (data) => {
     if (!socket.currentStroke) return;
 
-    let point = null;
-
-    // ✅ Support BOTH payload formats
-    if (data?.point) {
-      point = data.point;
-    } else if (
-      typeof data?.x === "number" &&
-      typeof data?.y === "number"
-    ) {
-      point = { x: data.x, y: data.y };
-    }
-
-    if (!point) return;
+    const point = {
+      x: data.x,
+      y: data.y,
+    };
 
     socket.currentStroke.points.push(point);
 
-    // Broadcast minimal move payload
+    // 🔥 Always broadcast full metadata
     socket.broadcast.emit("stroke:move", {
       strokeId: socket.currentStroke.id,
       x: point.x,
       y: point.y,
+      color: socket.currentStroke.color,
+      strokeWidth: socket.currentStroke.strokeWidth,
+      tool: socket.currentStroke.tool,
+      user: socket.currentStroke.user,
     });
   });
 
@@ -88,7 +77,6 @@ io.on("connection", (socket) => {
   socket.on("stroke:end", (data) => {
     if (!socket.currentStroke) return;
 
-    // Merge shape geometry if present
     if (data?.shapeType) {
       socket.currentStroke.shapeType = data.shapeType;
       socket.currentStroke.startX = data.startX;
@@ -97,34 +85,43 @@ io.on("connection", (socket) => {
       socket.currentStroke.endY = data.endY;
     }
 
-    // Save stroke permanently
     strokes.push(socket.currentStroke);
-
-    // Clear redo stack
     redoStack.length = 0;
 
-    // 🔥 Broadcast FULL stroke object
     io.emit("stroke:end", socket.currentStroke);
-
     socket.currentStroke = null;
   });
 
   // ==============================
-  // UNDO
+  // GHOST CURSOR MOVE
+  // ==============================
+  socket.on("cursor:move", ({ x, y }) => {
+    socket.broadcast.emit("cursor:update", {
+      socketId: socket.id,
+      username: users[socket.id],
+      x,
+      y,
+    });
+  });
+
+  // ==============================
+  // CURSOR LEAVE (MOBILE TOUCH END)
+  // ==============================
+  socket.on("cursor:leave", () => {
+    socket.broadcast.emit("cursor:remove", socket.id);
+  });
+
+  // ==============================
+  // UNDO / REDO
   // ==============================
   socket.on("undo", () => {
     if (!strokes.length) return;
-
     redoStack.push(strokes.pop());
     io.emit("canvas:reset", strokes);
   });
 
-  // ==============================
-  // REDO
-  // ==============================
   socket.on("redo", () => {
     if (!redoStack.length) return;
-
     strokes.push(redoStack.pop());
     io.emit("canvas:reset", strokes);
   });
@@ -135,17 +132,17 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     delete users[socket.id];
     io.emit("users:update", Object.values(users));
+    socket.broadcast.emit("cursor:remove", socket.id);
     console.log("User disconnected:", socket.id);
   });
 });
 
 // ==============================
-// SERVER START
-// ==============================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
